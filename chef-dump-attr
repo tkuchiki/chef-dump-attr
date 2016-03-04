@@ -1,0 +1,116 @@
+#!/usr/bin/env ruby
+
+require "pp"
+require "json"
+require "ohai"
+require "optparse"
+require "chef"
+require "chef/client"
+require "chef/config"
+require "chef/config_fetcher"
+require "chef/node"
+require "chef/node/attribute"
+
+def create_ohai(dir = nil)
+  config = {}
+  config[:directory] = dir if dir
+  ohai = Ohai::System.new(config)
+  ohai.all_plugins(nil)
+  ohai.data
+end
+
+def show_version()
+  puts("#{File.basename(__FILE__)} #{@version}")
+  exit
+end
+
+@args = {}
+@version = "0.1"
+
+OptionParser.new do |opt|
+  opt.on("-j JSON_ATTRIBS", "--json-attributes JSON_ATTRIBS", "Load attributes from a JSON file"){|v| @args[:json_file] = v }
+  opt.on("-c FILE_PATH", "--config FILE_PATH", "The configuration file to use"){|v| @args[:config_file] = v }
+  opt.on("-r ROLE_PATH", "--role-path ROLE_PATH", "Role path"){|v| @args[:role_path] = v }
+  opt.on("--cookbook-path COOKPATH_PATH", "Cookpath path"){|v| @args[:cookpath_path] = v }
+  opt.on("-d DATA_BAG_PATH", "--data-bag-path DATA_BAG_PATH", "Data bags path"){|v| @args[:data_bag_path] = v }
+  opt.on("-o OUTPUT", "--output OUTPUT", "Output type (json, ruby)"){|v| @args[:output] = v }
+  opt.on("--include-ohai", "Include ohai"){|v| @args[:include_ohai] = true }
+  opt.on("--ohai", "Output ohai"){|v| @args[:ohai] = true }
+  opt.on("--ohai-plugin-dir", "A directory to add to the Ohai search path"){|v| @args[:ohai_plugin_dir] = v }
+  opt.on("--data-bag-name", "Data bag name"){|v| @args[:data_bag_name] = v }
+  opt.on("--data-bag-item", "Data bag item"){|v| @args[:data_bag_item] = v }
+  opt.on("--no-pretty", "Not puretty output"){|v| @args[:no_pretty] = true }
+  opt.on("-v", "--version", "Show version"){|v| show_version() }
+  opt.parse!(ARGV)
+end
+
+unless @args.key?(:json_file)
+  puts "-j|--json-attributes is required."
+  exit 1
+end
+
+Chef::Config.from_file(@args[:config_file]) if @args.key?(:config_file)
+Chef::Config[:role_path] = @args[:role_path] if @args.key?(:role_path)
+Chef::Config[:cookbook_path] = @args[:cookbook_path] if @args.key?(:cookbook_path)
+Chef::Config[:data_bag_path] = @args[:data_bag_path] if @args.key?(:data_bag_path)
+Chef::Config[:local_mode] = true
+Chef::Config[:solo] = true
+Chef::Config.export_proxies
+Chef::Config.init_openssl
+
+@args[:output] ||= "json"
+@args[:include_ohai] ||= false
+@args[:ohai] ||= false
+@args[:no_pretty] ||= false
+
+Signal.trap("PIPE", "EXIT")
+
+attr = {}
+if @args[:ohai]
+  attr = create_ohai(@args[:ohai_plugin_dir])
+else
+  $stdout = File.open(File::NULL, "w")
+  @chef_client_json = Chef::ConfigFetcher.new(@args[:json_file]).fetch_json
+  @client = Chef::Client.new(
+    @chef_client_json,
+    override_runlist: nil,
+    specific_recipes: [],
+    runlist: nil
+  )
+  @client.run_ohai
+  @client.load_node
+  @client.build_node
+  begin
+    @client.setup_run_context
+  rescue
+  end
+
+  attr = @client.node.attributes.to_hash.dup
+
+  unless @args[:include_ohai]
+    ohai = create_ohai(@args[:ohai_plugin_dir])
+    ohai.each_key do |k|
+      attr.delete(k)
+    end
+
+    %W{tags recipes expanded_run_list roles cookbooks}.each do |key|
+      attr.delete(key)
+    end
+  end
+  $stdout = STDOUT
+end
+
+case @args[:output]
+when "json"
+  if @args[:no_pretty]
+    puts JSON.generate(attr)
+  else
+    puts JSON.pretty_generate(attr)
+  end
+when "ruby"
+  if @args[:no_pretty]
+    puts attr
+  else
+    pp attr
+  end
+end
