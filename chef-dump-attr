@@ -14,7 +14,13 @@ require "chef/node/attribute"
 def create_ohai(dir = nil)
   config = {}
   config[:directory] = dir if dir
-  ohai = Ohai::System.new(config)
+  ohai = nil
+  begin
+    ohai = Ohai::System.new(config)
+  rescue
+    Ohai::Config[:directory] = dir if dir
+    ohai = Ohai::System.new()
+  end
   ohai.all_plugins(nil)
   ohai.data
 end
@@ -57,7 +63,6 @@ Chef::Config[:local_mode] = true
 Chef::Config[:solo] = true
 Chef::Config.export_proxies
 Chef::Config.init_openssl
-
 @args[:output] ||= "json"
 @args[:include_ohai] ||= false
 @args[:ohai] ||= false
